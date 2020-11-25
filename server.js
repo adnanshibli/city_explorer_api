@@ -1,155 +1,203 @@
-"use strict";
-//Aplication Depenencies (require)
+'use strict';
+
 const express = require('express');
-const cors = require('cors');
 require('dotenv').config();
-const superagent = require('superagent');
-let pg = require('pg');
-const { json } = require('express');
-const client = new pg.Client(process.env.DATABASE_URL);
-
-
-//application setup (port,server,use cors)
-const PORT = process.env.PORT || 3000;
 const server = express();
+const pg = require('pg');
+const client  = new pg.Client(process.env.DATABASE_URL);
+const superagent = require('superagent');
+const yelp = require('yelp-fusion');
+// cors added
+const cors = require('cors');
 server.use(cors());
 
-//Application Routes
-server.get('/location', locationHandlerFunc)
-server.get('/weather', weathHanadlerFun);
-server.get('*', allRoutes);
-server.use(errorHandler);
 
+const PORT = process.env.PORT;
 
-// server.get('/test',testLocationHandler);
-// function testLocationHandler(req,res){
-//     let cityName=res.query.city;
-//     // let form=res.query.form;
-//     // let lat=res.query.lat;
-//     // let lon=res.query.lon;
-//     // INSERT INTO locations (search_quer,formatted_query,latitude,longitude) VALUES ($1,$2,$3,$4)`
-//     let SQL= `SELECT * FORM locations WHERE search_quer=${cityName};`// query
-//     client.query(SQL) //to link it to database
-//     .then((result)=>{ 
-//         res.send(result.rows);
-//     })
-// }
+server.get('/', (req, res) => {
+  res.send('Homepage');
+});
 
+server.get('/location', locationHandler);
+server.get('/weather', weatherHandler);
+server.get('/trails', trailHandler);
+server.get('/movies', movieHandler);
+server.get('/yelp', yelpHandler);
 
+function locationHandler(req, res){
+  let cityName = req.query.city;
+  // console.log(req.query)
+  let locationToken =  process.env.GEO_API_KEY;
+  let url = `https://us1.locationiq.com/v1/search.php?key=${locationToken}&q=${cityName}&format=json`;
 
-function locationHandlerFunc(req, res) {
-    let cityName = req.query.city;
-    let selectuery = `SELECT * FROM locations WHERE search_query='${cityName}';`;
-    client.query(selectuery)
+  let SQL  =`SELECT * FROM locations WHERE search_query='${cityName}';`;
+  client.query(SQL)
     .then(result => {
-        // console.log('hiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii'+result.rowCount)
-        // return result.rows;  
-           if(result.rowCount){
-            console.log(result.rows);
-            res.json(result.rows[0]);
-    }
-        else{
-            console.log('hiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii')
-            getCityLocation(cityName,req,res)
-            .then(locaData => { //return data from location IQ
-                res.status(200).json(locaData);
-            })
-            .catch(() => {
-                errorHandler('Something went wrong', req, res);
-            });
-        }
+      if(result.rowCount !==0){
+        // console.log(result);
+        res.status(200).json(result.rows[0]);
+      }else {
+        // console.log('inside else');
+        callLocationAPI(url, cityName)
+          .then(locData => {
+            // console.log(locData);
+            res.status(200).json(locData);
+          });
+        // console.log('after callback function');
+      }
+    })
+    .catch(error=>errorHandler(error, req, res));
+}
+function callLocationAPI(url, cityName){
+  return superagent.get(url)
+    .then(data => {
+      const locationObject = new Location(cityName, data.body);
+      let insertSQL = `INSERT INTO location (search_query,formatted_query, latitude, longitude) VALUES ($1,$2,$3,$4)`;
+      let safeValues = [locationObject.search_query,locationObject.formatted_query, locationObject.latitude,locationObject.longitude];
+      client.query(insertSQL,safeValues)
+        .then (() =>{
+          // console.log('your data has been added successfully!!');
+        });
+      // console.log(locationObject);
+      return locationObject;
+    });
+}
+function weatherHandler(req, res){
+  let cityName = req.query.search_query;
+  let cityLat = req.query.lat;
+  let cityLon = req.query.lon;
+
+  // console.log(req.query);
+  let weatherKey = process.env.WEATHER_API_KEY;
+  let url = `https://api.weatherbit.io/v2.0/forecast/daily?city=${cityName}&key=${weatherKey}&days=8&lat=${cityLat}&lon=${cityLon}`;
+  superagent.get(url)
+    .then(weatehrData => {
+      let weatherObjcts =  weatehrData.body.data.map( w => {
+        let weatherObject = new Weather(w);
+        return weatherObject;
+      });
+      res.status(200).json(weatherObjcts);
+    })
+    .catch(()=> {
+      errorHandler('Weather .. Something went wrong!!', req, res);
+    });
+}
+
+
+function trailHandler(req, res){
+  let trailLat = req.query.latitude;
+  let trailLon = req.query.longitude;
+  let trailsKey = process.env.TRAIL_API_KEY;
+  let url = `https://www.hikingproject.com/data/get-trails?lat=${trailLat}&lon=${trailLon}&maxDistance=10&key=${trailsKey}`;
+
+  superagent.get(url)
+    .then(tarilsData => {
+      let trailObjects = tarilsData.body.trails.map( t => {
+        let trail = new Trail(t);
+        return trail;
+      });
+      res.status(200).json(trailObjects);
     })
     .catch(() => {
-        errorHandler('Something went wrong', req, res);
+      errorHandler('Trails .. Something went wrong!!', req, res);
     });
-   
+}
+function movieHandler(req, res){
+  let cityName = req.query.search_query;
+  let moviesKey = process.env.MOVIE_API_KEY;
+  let url = `https://api.themoviedb.org/3/search/movie?api_key=${moviesKey}&query=${cityName}`;
+
+  superagent.get(url)
+    .then(movieResults => {
+      // console.log(movieResults.body.results);
+      let movieObjects = movieResults.body.results.map( m => {
+        let movie = new Movie(m);
+        return movie;
+      });
+      res.status(200).json(movieObjects);
+    })
+    .catch(()=>{
+      errorHandler('Movies .. Something went wrong!!', req, res);
+    });
 }
 
+function yelpHandler(req,res){
 
 
-
- 
-function getCityLocation(cityName,req,res) {
-    let GEO_API_KEY = process.env.GEO_API_KEY;
-    let url = `https://eu1.locationiq.com/v1/search.php?key=${GEO_API_KEY}&q=${cityName}&format=json`;
-        return superagent.get(url)//bring me the data from url
-            .then(myData => {
-                  // save to the DB
-                 let formatted_query = myData.body[0].display_name;
-                 let longitude = myData.body[0].lon;
-                 let latitude = myData.body[0].lat;
-                 let insertLocation = `INSERT INTO locations (search_query,formatted_query,latitude,longitude) VALUES ($1,$2,$3,$4)`;
-                let safeValues = [cityName,formatted_query, latitude, longitude];
-                client.query(insertLocation, safeValues)
-                .then(()=>{
-                    res.send('your data has been added successfully!!');
-                })
-                console.log(myData.body)
-                let locObj = new Location(cityName, myData.body);//------ just the impotrtant data-------
-                return locObj//to the client
+  let cityName = req.query.search_query;
+    let page = req.query.page;
+    let offset = ((page - 1) * 5 + 1);
+    let yelpKey = process.env.YELP_API_KEY;
+    let url = `https://api.yelp.com/v3/businesses/search?location=${cityName}&limit=5&offset=${offset}`;
+    superagent.get(url)
+        .set({ 'Authorization': 'Bearer ' + yelpKey })
+        .then(data => {
+          console.log(1111111111111111111111111111111111111111111111111);
+            let yData = data.body.businesses.map(obj => {
+                return new Yelp(obj);
             })
-            .catch(() => {
-                errorHandler('Something went wrong',req,res);
-            });
-    
-}
-
-
-function Location(city, locData) {
-    this.search_query = city;
-    this.formatted_query = locData[0].display_name;
-    this.latitude = locData[0].lat;
-    this.longitude = locData[0].lon;
-}
-
-
-
-function Weather(day) {
-    this.forecast = day.weather.description;
-    this.time = day.datetime;
-}
-
-
-function weathHanadlerFun(req, res) {
-    let cityName = req.query.search_query;
-    // console.log(cityName);
-    let lon = req.query.longitude;
-    let lat = req.query.latitude;
-    let WEATHER_API_KEY = process.env.WEATHER_API_KEY;
-    let weatherURL = `https://api.weatherbit.io/v2.0/forecast/daily?city=${cityName}&lat=${lat}&lon=${lon}&key=${WEATHER_API_KEY}&days=5`;
-
-    superagent.get(weatherURL)
-        .then(weatherData => {
-            let weatherArray = weatherData.body.data.map(element => new Weather(element));
-            res.json(weatherArray);
+            res.json(yData);
         })
-
-        .catch(() => {
-            errorHandler('Soperagnet faced a truble', req, res);
-        });
+        .catch("error...", req, res);
 
 }
-
-
-
-
-//handle all routes
-function allRoutes(req, res) {
-    res.status(404).send('not found')
+function errorHandler(error, req, res) {
+  res.status(500).send(error);
 }
 
-
-
-
-function errorHandler(req, res) {
-    res.status(500).send(error);
+function Location(city, locationData){
+  this.search_query = city;
+  this.formatted_query = locationData[0].display_name;
+  this.latitude = locationData[0].lat;
+  this.longitude = locationData[0].lon;
 }
 
+function Weather(weatehrData){
+  this.forecast = weatehrData.weather.description;
+  this.time = weatehrData.datetime;
+}
+function Trail(trailData){
+  this.name = trailData.name;
+  this.location = trailData.location;
+  this.length = trailData.length;
+  this.stars = trailData.stars;
+  this.star_votes = trailData.starVotes;
+  this.summary = trailData.summary;
+  this.trail_url = trailData.url;
+  this. conditions = trailData.conditionStatus;
+  this.condition_date = trailData.conditionDate.split(' ')[0];
+  this.condition_time = trailData.conditionDate.split(' ')[1];
+}
+
+function Movie(movieData){
+  this.title = movieData.title;
+  this.overview = movieData.overview;
+  this.average_votes= movieData.vote_average;
+  this.total_votes= movieData.vote_count;
+  this.image_url= `https://image.tmdb.org/t/p/w500/${movieData.poster_path}`;
+  this.popularity = movieData.popularity;
+  this.released_on = movieData. release_date;
+}
+
+function Yelp(value) {
+  this.name = value.name;
+  this.image_url = value.image_url;
+  this.price = value.price;
+  this.rating = value.rating;
+  this.url = value.url;
+}
+
+server.get('*', (req, res) => {
+  res.status(400).send('Not found');
+});
+server.use((error, req, res) => {
+  res.status(500).send('Sorry, something went wrong');
+});
 
 
 client.connect()
-    .then(() => {
-        server.listen(PORT, () => {
-            console.log(`listining on port ${PORT}`);
-        });
+  .then(() => {
+    server.listen(PORT, ()=>{
+      console.log(`Listening on port ${PORT}`);
     });
+  });
